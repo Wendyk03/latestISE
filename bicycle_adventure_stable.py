@@ -715,13 +715,33 @@ class Platform(pygame.sprite.Sprite):
         self.rect.y = y
 
 class FinishLine(pygame.sprite.Sprite):
-    def __init__(self, x, y, width=20, height=500):
+    def __init__(self, x, y, width=100, height=200):
         super().__init__()
-        self.image = pygame.Surface([width, height])
-        self.image.fill(GREEN)
-        self.rect = self.image.get_rect()
-        self.rect.x = x
-        self.rect.y = y
+        self.frames = []
+        for i in range(100):  # or how many frames you have
+            try:
+                img = pygame.image.load(resource_path(f"frame_{i:03d}_delay-0.05s.gif")).convert_alpha()
+                img = pygame.transform.scale(img, (width, height))
+                self.frames.append(img)
+            except Exception as e:
+                print(f"Error loading frame {i}: {e}")
+        if not self.frames:
+            # fallback single green surface
+            self.frames = [pygame.Surface((width, height))]
+            self.frames[0].fill((0, 255, 0))
+        self.current_frame = 0
+        self.image = self.frames[0]
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.animation_timer = 0
+        self.animation_speed = 0.15  # adjust speed
+
+    def update(self):
+        self.animation_timer += self.animation_speed
+        if self.animation_timer >= 1:
+            self.animation_timer = 0
+            self.current_frame = (self.current_frame + 1) % len(self.frames)
+            self.image = self.frames[self.current_frame]
+
 
 class FireEffect(pygame.sprite.Sprite):
     def __init__(self, x, y):
@@ -781,6 +801,12 @@ class Game:
         self.shake_timer = 0
         self.shake_intensity = 10
         self.smoke_particles = pygame.sprite.Group()  # SMOKE PARTICLE ADDITION START
+        
+        self.soul_appear_sound = None
+        self.soul_appear_sound_played = False
+        self.soul_appear_sound_start_time = 0
+        self.soul_appear_sound_length = 0
+        
         self.level_time = None
         logging.info("Game object initialized")
 
@@ -797,6 +823,21 @@ class Game:
         self.soul_animation_start_time = 0
         self.soul_animation_duration = 1500  # 1.5 seconds soul effect
 
+        # 新增：
+        self.camera_x = 0              # CAMERA-X
+        self.camera_target_x = 0       # CAMERA TARGET-X
+
+        self.waiting_after_blackscreen = False
+        self.blackscreen_start_time = 0
+
+        try:
+            self.soul_appear_sound = pygame.mixer.Sound(resource_path("man-scream-7-276686.mp3"))
+            self.soul_appear_sound_length = int(self.soul_appear_sound.get_length() * 700)  # 秒转毫秒
+            logging.info("Soul appear sound loaded")
+        except Exception as e:
+            logging.warning(f"Failed to load soul appear sound: {e}")
+            self.soul_appear_sound = None
+            self.soul_appear_sound_length = 0
 
 
 
@@ -819,6 +860,7 @@ class Game:
         camera_offset_x = max(0, camera_offset_x)
         shake_offset_x = 0
         shake_offset_y = 0
+        
 
         if background_image:
             surface.blit(background_image, (shake_offset_x, shake_offset_y))
@@ -854,23 +896,28 @@ class Game:
 
 
         for platform in self.platforms:
-            surface.blit(platform.image, (platform.rect.x - camera_offset_x + shake_offset_x, platform.rect.y + shake_offset_y))
+            surface.blit(platform.image, (platform.rect.x - camera_offset_x, platform.rect.y))
         for collectible in self.collectibles:
-            surface.blit(collectible.image, (collectible.rect.x - camera_offset_x + shake_offset_x, collectible.rect.y + shake_offset_y))
+            surface.blit(collectible.image, (collectible.rect.x - camera_offset_x, collectible.rect.y))
         for particle in self.particle_group:
-            surface.blit(particle.image, (particle.rect.x - camera_offset_x + shake_offset_x, particle.rect.y + shake_offset_y))
+            surface.blit(particle.image, (particle.rect.x - camera_offset_x, particle.rect.y))
         for obstacle in self.obstacles:
-            surface.blit(obstacle.image, (obstacle.rect.x - camera_offset_x + shake_offset_x, obstacle.rect.y + shake_offset_y))
+            surface.blit(obstacle.image, (obstacle.rect.x - camera_offset_x, obstacle.rect.y))
         for enemy in self.enemies:
-            surface.blit(enemy.image, (enemy.rect.x - camera_offset_x + shake_offset_x, enemy.rect.y + shake_offset_y))
+            surface.blit(enemy.image, (enemy.rect.x - camera_offset_x, enemy.rect.y))
         if hasattr(self, 'ghost') and self.ghost is not None:
-            surface.blit(self.ghost.image, (self.ghost.rect.x - camera_offset_x + shake_offset_x, self.ghost.rect.y + shake_offset_y))
+            surface.blit(self.ghost.image, (self.ghost.rect.x - camera_offset_x, self.ghost.rect.y))
+            
+        
         for fire_effect in self.fire_effects:
             surface.blit(fire_effect.image, (fire_effect.rect.x - camera_offset_x + shake_offset_x, fire_effect.rect.y + shake_offset_y))
+        
         #Draw player
-        surface.blit(self.player.image, (self.player.rect.x - camera_offset_x + shake_offset_x, self.player.rect.y + shake_offset_y))
+        surface.blit(self.player.image, (self.player.rect.x - camera_offset_x, self.player.rect.y))
+        
         if self.finish_line:
             surface.blit(self.finish_line.image, (self.finish_line.rect.x - camera_offset_x + shake_offset_x, self.finish_line.rect.y + shake_offset_y))
+        
         if self.player.dizzy and self.player.dizzy_frames:
             dizzy_img = self.player.dizzy_frames[self.player.dizzy_frame_idx]
             dizzy_x = self.player.rect.x - camera_offset_x + (self.player.rect.width - dizzy_img.get_width()) // 2 + shake_offset_x
@@ -979,7 +1026,8 @@ class Game:
                     collectible = Collectible(x + platform_width // 2, terrain_y - 40, particle_group=self.particle_group)
                     self.collectibles.add(collectible)
             self.rightmost_platform_x = level_length - platform_width
-            self.finish_line = FinishLine(level_length, 100)
+            self.finish_line = FinishLine(level_length, terrain_y - 150)
+
             for platform in self.platforms:
                 if platform.rect.x == 0:
                     self.player.rect.bottom = platform.rect.top + self.player.foot_offset + self.player.wheel_adjustment
@@ -1084,9 +1132,9 @@ class Game:
 
 
 
-        # Winning condition: reach finish line with zero hits
+        # Winning condition: reach finish line less than 2 hits
         if self.finish_line and self.player.rect.colliderect(self.finish_line.rect):
-            if self.player.dizzy_hits == 0:
+            if self.player.dizzy_hits < 2:
                 if self.state != GAME_WIN:
                     self.state = GAME_WIN
                     now = pygame.time.get_ticks()
@@ -1104,7 +1152,7 @@ class Game:
         # 1) Handle red screen flashing (blinking effect)
         if self.flash_red_screen:
             elapsed = now - self.flash_start_time
-            blink_interval = 250  # milliseconds
+            blink_interval = 150  # milliseconds
             total_blinks = 2
             blink_cycle_duration = blink_interval * 2  # 500ms per full blink (on + off)
             total_flash_duration = blink_cycle_duration * total_blinks  # 1000ms for 2 blinks
@@ -1142,28 +1190,104 @@ class Game:
 
             if elapsed > total_flash_duration:
                 self.flash_red_screen = False
+                self.waiting_after_blackscreen = True
+                self.blackscreen_start_time = now
+
+                if self.soul_appear_sound:
+                    self.soul_appear_sound.play()
+                    self.soul_appear_sound_played = True
+                    self.soul_appear_sound_start_time = now
+
+
+
+                return
+
+            
+        elif self.waiting_after_blackscreen:
+            logging.info("In blackscreen waiting state")
+            black_elapsed = now - self.blackscreen_start_time
+
+            max_black_duration = 300  # total black screen duration in ms
+
+            if black_elapsed < max_black_duration // 2:
+                alpha = int(200 * (black_elapsed / (max_black_duration / 2)))
+            else:
+                alpha = int(200 * (1 - (black_elapsed - max_black_duration / 2) / (max_black_duration / 2)))
+
+            alpha = max(0, min(255, 120))  # clamp alpha to valid range
+
+            black_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            black_overlay.fill((0, 0, 0, 120))
+
+            screen.blit(black_overlay, (0, 0))
+            pygame.display.flip()
+
+
+            
+            if self.soul_appear_sound_played:
+                sound_done = (now - self.soul_appear_sound_start_time) > self.soul_appear_sound_length
+            else:
+                sound_done = True
+
+            
+            if black_elapsed > max_black_duration and sound_done:
+                self.waiting_after_blackscreen = False
                 self.zooming_in = True
                 self.zoom_start_time = now
+
+                self.camera_x = self.player.rect.x - SCREEN_WIDTH
+                self.camera_y = self.player.rect.y - SCREEN_HEIGHT // 2
+                self.camera_target_x = self.player.rect.x - SCREEN_WIDTH // 2
+
             return
+
         
 
         # 2) Handle zoom in effect
         if self.zooming_in:
+            
             elapsed = now - self.zoom_start_time
-            progress = min(elapsed / self.zoom_duration, 1.0)
+            progress = min(elapsed / self.zoom_duration, 1.0)  # 从0渐变到1
 
+            # 放大倍数从1.0到目标(这里2.0)，线性渐变
+            target_zoom = 2.0
+            zoom_scale = 1.0 + (target_zoom - 1.0) * progress
+
+            logging.info(f"Zooming in progress, progress={progress:.2f}, zoom_scale={zoom_scale:.2f}")
+
+            
+            target_camera_x = self.player.rect.x - SCREEN_WIDTH // 2 / zoom_scale
+            self.camera_x += (target_camera_x - self.camera_x) * 3.0 # 0.1是缓动速度，可调节
+
+            
+            target_camera_y = self.player.rect.y - SCREEN_HEIGHT // 2 / zoom_scale
+            self.camera_y = getattr(self, 'camera_y', 0)
+            self.camera_y += (target_camera_y - self.camera_y) * 3.0
+
+            
             temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self.draw_level1_to_surface(temp_surface)
 
-            scaled_width = int(SCREEN_WIDTH * (1.0 + 0.5 * progress))  # zoom from 1.0 to 1.5
-            scaled_height = int(SCREEN_HEIGHT * (1.0 + 0.5 * progress))
+           
+            scaled_width = int(SCREEN_WIDTH * zoom_scale)
+            scaled_height = int(SCREEN_HEIGHT * zoom_scale)
             scaled_surface = pygame.transform.smoothscale(temp_surface, (scaled_width, scaled_height))
 
-            x = (SCREEN_WIDTH - scaled_width) // 2
-            y = (SCREEN_HEIGHT - scaled_height) // 2
+            
+            offset_x = int(self.camera_x * zoom_scale)
+            offset_y = int(self.camera_y * zoom_scale)
 
+            # 画面偏移限制，避免黑边
+            max_offset_x = scaled_width - SCREEN_WIDTH
+            max_offset_y = scaled_height - SCREEN_HEIGHT
+
+            offset_x = min(max(offset_x, 0), max_offset_x)
+            offset_y = min(max(offset_y, 0), max_offset_y)
+
+            # 把放大的画面画到屏幕，偏移对应镜头位置
             screen.fill(BLACK)
-            screen.blit(scaled_surface, (x, y))
+            screen.blit(scaled_surface, (-offset_x, -offset_y))
+
             pygame.display.flip()
 
             if progress >= 1.0:
@@ -1171,10 +1295,11 @@ class Game:
                 self.soul_animation_started = True
                 self.soul_animation_start_time = now
                 self.soul_effect = SoulEffect(self.player.rect.centerx, self.player.rect.centery, self.particle_group)
-                print(f"Soul effect started with {len(self.particle_group)} particles")
-                
 
-            return  # Skip rest while zooming
+            return
+
+
+
 
         # 3) Handle soul effect animation
         if self.soul_animation_started:
@@ -1270,7 +1395,7 @@ class Game:
                                 self.ghost = Enemy(ghost_x, ghost_y, speed=2)
                                 self.enemies.add(self.ghost)
                                 logging.debug(f"Ghost created at ({ghost_x},{ghost_y}) speed {self.ghost.speed}")
-                            self.ghost.speed = 2
+                            self.ghost.speed = 4
                             self.ghost.chasing = True
                                 
                             logging.debug(f"Ghost created with speed {self.ghost.speed} and chasing = {self.ghost.chasing}")
@@ -1405,6 +1530,7 @@ class Game:
         # Draw the rest of the elements (player, enemies, etc.)
         screen.blit(self.player.image, (self.player.rect.x - camera_offset_x + shake_offset_x, self.player.rect.y + shake_offset_y))
         if self.finish_line:
+            self.finish_line.update()
             screen.blit(self.finish_line.image, (self.finish_line.rect.x - camera_offset_x + shake_offset_x, self.finish_line.rect.y + shake_offset_y))
         for fire_effect in self.fire_effects:
             screen.blit(fire_effect.image, (fire_effect.rect.x - camera_offset_x + shake_offset_x, fire_effect.rect.y + shake_offset_y))
