@@ -816,19 +816,18 @@ class Game:
         self.zooming_in = False
         self.zoom_factor = 1.0
         self.zoom_start_time = 0
-        self.zoom_duration = 1500  # 1.5 seconds zoom
+        self.zoom_duration = 4000  # 1.5 seconds zoom
 
         self.soul_animation_started = False
         self.soul_effect = None
         self.soul_animation_start_time = 0
-        self.soul_animation_duration = 1500  # 1.5 seconds soul effect
+        self.soul_animation_duration = 4000  # 1.5 seconds soul effect
 
         # 新增：
         self.camera_x = 0              # CAMERA-X
         self.camera_target_x = 0       # CAMERA TARGET-X
 
-        self.waiting_after_blackscreen = False
-        self.blackscreen_start_time = 0
+        
 
         try:
             self.soul_appear_sound = pygame.mixer.Sound(resource_path("man-scream-7-276686.mp3"))
@@ -856,6 +855,9 @@ class Game:
 
 
     def draw_level1_to_surface(self, surface):
+
+        print("draw_level1_to_surface called")
+        surface.fill((50,50,50))        
         camera_offset_x = self.player.rect.x - SCREEN_WIDTH // 2
         camera_offset_x = max(0, camera_offset_x)
         shake_offset_x = 0
@@ -867,7 +869,7 @@ class Game:
             if dark_overlay:
                 surface.blit(dark_overlay, (shake_offset_x, shake_offset_y))
         else:
-            surface.fill(BLACK)
+            surface.fill((50, 50, 50))
         
         # Tinted overlay (dark red) 
         #tint_color = (30, 0, 0, 180)  # Dark red, semi-transparent
@@ -1011,11 +1013,13 @@ class Game:
             self.player = Player(100, 300, game_ref=self)
             self.platforms = pygame.sprite.Group()
             self.particle_group = pygame.sprite.Group()  # New: Reset particle group
+            
             self.high_flying_obstacle = HighFlyingObstacle(
                 x=0, y=80, width=80, height=40, speed=3, left_limit=0, right_limit=SCREEN_WIDTH
             )
             self.high_flying_obstacle.game_ref = self
             self.obstacles.add(self.high_flying_obstacle)
+
             terrain_y = 500
             platform_width = 120
             level_length = 5000
@@ -1032,9 +1036,10 @@ class Game:
                 if platform.rect.x == 0:
                     self.player.rect.bottom = platform.rect.top + self.player.foot_offset + self.player.wheel_adjustment
                     break
+                
             self.enemies = pygame.sprite.Group()
-            enemy = Enemy(-50, 300)
-            self.enemies.add(enemy)
+            self.ghost = None          # 关键：没有敌人初始化为空
+            self.enemy_spawned = False # 关键：标记敌人是否已生成
             try:
                 music_path = resource_path("dark-ambient-51418.wav")
                 pygame.mixer.music.load(music_path)
@@ -1061,14 +1066,12 @@ class Game:
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_ESCAPE:
                             running = False
-                        if self.state == MAIN_MENU:
-                            if not self.zooming_in and not self.soul_animation_started:
-                                if event.key == pygame.K_SPACE or event.key == pygame.K_RETURN:
-                                    self.start_level1()
-                        elif self.state == GAME_OVER or self.state == GAME_WIN:
-                            if not self.zooming_in and not self.soul_animation_started:
-                                if event.key == pygame.K_SPACE or event.key == pygame.K_RETURN:
-                                    self.__init__()
+                        if self.state == MAIN_MENU and not self.zooming_in and not self.soul_animation_started:
+                            if event.key == pygame.K_SPACE or event.key == pygame.K_RETURN:
+                                self.start_level1()
+                        elif (self.state == GAME_OVER or self.state == GAME_WIN) and not self.zooming_in and not self.soul_animation_started:
+                            if event.key == pygame.K_SPACE or event.key == pygame.K_RETURN:
+                                self.__init__()
 
                         elif self.state == LEVEL_1:
                             if event.key == pygame.K_DOWN:
@@ -1148,38 +1151,42 @@ class Game:
 
         # Draw everything including smoke particles
             self.smoke_particles.draw(screen)  # Ensure smoke particles are drawn
+            
+        
+        if not self.enemy_spawned and self.player.rect.x > 100:
+            ghost_x = self.player.rect.x -100  # In front of player, visible on screen
+            ghost_y = self.player.rect.y
 
+            self.ghost = Enemy(ghost_x, ghost_y, speed=2)
+            self.enemies.add(self.ghost)
+            self.enemy_spawned = True
+            self.ghost.chasing = True
+            logging.debug(f"Enemy spawned at ({ghost_x}, {ghost_y}) and starts chasing")
+        
         # 1) Handle red screen flashing (blinking effect)
+
+
         if self.flash_red_screen:
             elapsed = now - self.flash_start_time
-            blink_interval = 150  # milliseconds
+            blink_interval = 150
             total_blinks = 2
-            blink_cycle_duration = blink_interval * 2  # 500ms per full blink (on + off)
-            total_flash_duration = blink_cycle_duration * total_blinks  # 1000ms for 2 blinks
+            blink_cycle_duration = blink_interval * 2
+            total_flash_duration = blink_cycle_duration * total_blinks
 
             blink_phase = (elapsed // blink_interval) % 2  # 0=red on, 1=red off
 
-        # Update ghost and other enemies even during flash
+            
             self.player.update(self.platforms)
             self.fire_effects.update()
             self.collectibles.update()
             self.particle_group.update()
-
-            # Add smoke particle updates and draw here:
             self.smoke_particles.update()
-            self.smoke_particles.draw(screen)
-
             for enemy in self.enemies:
                 enemy.update(self.player.rect.x, self.player.rect.y, self.platforms)
-                if enemy == getattr(self, 'ghost', None):
-                    logging.debug(f"Ghost speed={enemy.speed}, chasing={enemy.chasing}, pos=({enemy.rect.x},{enemy.rect.y})")
-            
-            
 
-            # Draw everything but overlay a red flashing screen
             self.draw_level1()
 
-            # Draw red overlay on top on blink phase
+            
             if blink_phase == 0:
                 red_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
                 red_overlay.set_alpha(150)
@@ -1188,58 +1195,61 @@ class Game:
 
             pygame.display.flip()
 
+            
             if elapsed > total_flash_duration:
                 self.flash_red_screen = False
-                self.waiting_after_blackscreen = True
-                self.blackscreen_start_time = now
-
-                if self.soul_appear_sound:
+                if self.soul_appear_sound and not self.soul_appear_sound_played:
                     self.soul_appear_sound.play()
                     self.soul_appear_sound_played = True
                     self.soul_appear_sound_start_time = now
-
-
-
-                return
-
-            
-        elif self.waiting_after_blackscreen:
-            logging.info("In blackscreen waiting state")
-            black_elapsed = now - self.blackscreen_start_time
-
-            max_black_duration = 300  # total black screen duration in ms
-
-            if black_elapsed < max_black_duration // 2:
-                alpha = int(200 * (black_elapsed / (max_black_duration / 2)))
-            else:
-                alpha = int(200 * (1 - (black_elapsed - max_black_duration / 2) / (max_black_duration / 2)))
-
-            alpha = max(0, min(255, 120))  # clamp alpha to valid range
-
-            black_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            black_overlay.fill((0, 0, 0, 120))
-
-            screen.blit(black_overlay, (0, 0))
-            pygame.display.flip()
-
-
-            
-            if self.soul_appear_sound_played:
-                sound_done = (now - self.soul_appear_sound_start_time) > self.soul_appear_sound_length
-            else:
-                sound_done = True
-
-            
-            if black_elapsed > max_black_duration and sound_done:
-                self.waiting_after_blackscreen = False
                 self.zooming_in = True
-                self.zoom_start_time = now
-
-                self.camera_x = self.player.rect.x - SCREEN_WIDTH
+                self.zoom_start_time = pygame.time.get_ticks()
+                self.camera_x = self.player.rect.x - SCREEN_WIDTH // 2
                 self.camera_y = self.player.rect.y - SCREEN_HEIGHT // 2
                 self.camera_target_x = self.player.rect.x - SCREEN_WIDTH // 2
+                self.camera_target_y = self.player.rect.y - SCREEN_HEIGHT // 2
+                logging.debug(f"Camera initialized: x={self.camera_x}, y={self.camera_y}")
+                return
 
-            return
+
+            
+        # elif self.waiting_after_blackscreen:
+        #     logging.info("In blackscreen waiting state")
+        #     black_elapsed = now - self.blackscreen_start_time
+
+        #     max_black_duration = 300  # total black screen duration in ms
+
+        #     if black_elapsed < max_black_duration // 2:
+        #         alpha = int(200 * (black_elapsed / (max_black_duration / 2)))
+        #     else:
+        #         alpha = int(200 * (1 - (black_elapsed - max_black_duration / 2) / (max_black_duration / 2)))
+
+        #     alpha = max(0, min(255, 120))  # clamp alpha to valid range
+
+        #     black_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        #     black_overlay.fill((0, 0, 0, 120))
+
+        #     screen.blit(black_overlay, (0, 0))
+        #     pygame.display.flip()
+
+            
+            
+        #     if self.soul_appear_sound_played:
+        #         sound_done = (now - self.soul_appear_sound_start_time) > self.soul_appear_sound_length
+        #     else:
+        #         sound_done = True
+
+            
+        #     if black_elapsed > max_black_duration and sound_done:
+        #         self.waiting_after_blackscreen = False
+        #         self.zooming_in = True
+        #         self.zoom_start_time = now
+
+        #         self.camera_x = self.player.rect.x - SCREEN_WIDTH
+        #         self.camera_y = self.player.rect.y - SCREEN_HEIGHT // 2
+        #         self.camera_target_x = self.player.rect.x - SCREEN_WIDTH // 2
+
+        #     return
 
         
 
@@ -1247,26 +1257,27 @@ class Game:
         if self.zooming_in:
             
             elapsed = now - self.zoom_start_time
-            progress = min(elapsed / self.zoom_duration, 1.0)  # 从0渐变到1
+            progress = min(elapsed / self.zoom_duration, 1.0)  # 
 
             # 放大倍数从1.0到目标(这里2.0)，线性渐变
-            target_zoom = 2.0
+            target_zoom = 3.0
             zoom_scale = 1.0 + (target_zoom - 1.0) * progress
 
             logging.info(f"Zooming in progress, progress={progress:.2f}, zoom_scale={zoom_scale:.2f}")
 
             
-            target_camera_x = self.player.rect.x - SCREEN_WIDTH // 2 / zoom_scale
-            self.camera_x += (target_camera_x - self.camera_x) * 3.0 # 0.1是缓动速度，可调节
+            target_camera_x = self.player.rect.x - SCREEN_WIDTH / (2 * zoom_scale)
+            target_camera_y = self.player.rect.y - SCREEN_HEIGHT / (2 * zoom_scale)
 
-            
-            target_camera_y = self.player.rect.y - SCREEN_HEIGHT // 2 / zoom_scale
-            self.camera_y = getattr(self, 'camera_y', 0)
-            self.camera_y += (target_camera_y - self.camera_y) * 3.0
+            lerp_speed = 0.5
+            self.camera_x += (target_camera_x - self.camera_x) * lerp_speed
+            self.camera_y += (target_camera_y - self.camera_y) * lerp_speed
 
             
             temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self.draw_level1_to_surface(temp_surface)
+            #screen.blit(temp_surface, (0, 0))
+            #pygame.display.flip()
 
            
             scaled_width = int(SCREEN_WIDTH * zoom_scale)
@@ -1285,18 +1296,26 @@ class Game:
             offset_y = min(max(offset_y, 0), max_offset_y)
 
             # 把放大的画面画到屏幕，偏移对应镜头位置
-            screen.fill(BLACK)
+            #screen.fill(BLACK)
             screen.blit(scaled_surface, (-offset_x, -offset_y))
+            
 
-            pygame.display.flip()
+
+
+            
+
 
             if progress >= 1.0:
-                self.zooming_in = False
-                self.soul_animation_started = True
-                self.soul_animation_start_time = now
-                self.soul_effect = SoulEffect(self.player.rect.centerx, self.player.rect.centery, self.particle_group)
-
-            return
+                if not hasattr(self, 'zoom_pause_start'):
+                    self.zoom_pause_start = now
+                if now - self.zoom_pause_start >= 300:  # 0.5-second pause
+                    self.zooming_in = False
+                    self.soul_animation_started = True
+                    self.soul_animation_start_time = now
+                    self.soul_effect = SoulEffect(self.player.rect.centerx, self.player.rect.centery, self.particle_group)
+                    logging.info("Zoom finished, starting soul animation")
+                    del self.zoom_pause_start
+                return
 
 
 
@@ -1324,15 +1343,16 @@ class Game:
             screen.blit(self.player.image, (self.player.rect.x - camera_offset_x, self.player.rect.y))
 
             # Draw particles with camera offset
-            for particle in self.particle_group:
-                screen.blit(particle.image, (particle.rect.x - camera_offset_x, particle.rect.y))
+            # for particle in self.particle_group:
+            #     screen.blit(particle.image, (particle.rect.x - camera_offset_x, particle.rect.y))
 
             # With this:
             for particle in self.particle_group:
                 if hasattr(particle, 'glow_image'):
                     glow_rect = particle.glow_image.get_rect(center=particle.rect.center)
-                    screen.blit(particle.glow_image, glow_rect.topleft)
-                screen.blit(particle.image, particle.rect.topleft)
+                    screen.blit(particle.glow_image, (glow_rect.x - camera_offset_x, glow_rect.y))
+                screen.blit(particle.image, (particle.rect.x - camera_offset_x, particle.rect.y))
+
             pygame.display.flip()
 
             if ended or now - self.soul_animation_start_time > self.soul_animation_duration:
@@ -1379,7 +1399,6 @@ class Game:
                 if isinstance(obstacle, (FlyingObstacle, DroppedObstacle)):
                     if not self.player.crouch:
                         if self.player.dizzy_hits == 0:
-                            # First hit: spawn ghost and start chasing
                             self.player.dizzy_hits = 1
                             self.player.dizzy = True
                             self.player.dizzy_frame_idx = 0
@@ -1389,30 +1408,29 @@ class Game:
                                 collision_sound.play()
                             self.shake_timer = 20
                             obstacle.kill()
-                            if not hasattr(self, 'ghost') or self.ghost is None:
+                            # 如果敌人未生成，则生
+                            if not self.enemy_spawned:
                                 ghost_x = self.player.rect.x - 780
                                 ghost_y = self.player.rect.y
                                 self.ghost = Enemy(ghost_x, ghost_y, speed=2)
                                 self.enemies.add(self.ghost)
-                                logging.debug(f"Ghost created at ({ghost_x},{ghost_y}) speed {self.ghost.speed}")
-                            self.ghost.speed = 4
+                                self.enemy_spawned = True
+                                logging.debug(f"Ghost created due to hit at ({ghost_x},{ghost_y})")
+                            # 让敌人加速追击
+                            self.ghost.speed = 5
                             self.ghost.chasing = True
-                                
-                            logging.debug(f"Ghost created with speed {self.ghost.speed} and chasing = {self.ghost.chasing}")
+                            logging.debug(f"Ghost speed increased to {self.ghost.speed}")
 
                         elif self.player.dizzy_hits == 1:
-                            # Second hit: increase ghost speed and start red flash sequence
                             self.player.dizzy_hits = 2
                             self.player.dizzy = True
                             self.player.dizzy_frame_idx = 0
                             self.player.dizzy_timer = 0
                             self.player.dizzy_loops = 0
-                            if hasattr(self, 'ghost') and self.ghost is not None:
+                            if self.ghost is not None:
                                 self.ghost.speed = 6
                                 self.ghost.chasing = True
-                                logging.debug(f"Ghost speed set to {self.ghost.speed} and chasing = {self.ghost.chasing}")
-                            print(f"Ghost position: {self.ghost.rect.x}, {self.ghost.rect.y}")
-                            print(f"DEBUG: Ghost speed set to {self.ghost.speed} and chasing = {self.ghost.chasing}")
+                                logging.debug(f"Ghost speed increased to {self.ghost.speed}")
                             if collision_sound:
                                 collision_sound.play()
                             self.shake_timer = 30
@@ -1420,20 +1438,11 @@ class Game:
                             self.player.speed_y = 0
 
                             self.flash_red_screen = True
-                            self.flash_start_time = now
-
-                            self.zooming_in = False
-                            self.zoom_factor = 1.0
-
-                            self.soul_animation_started = False
-                            self.soul_effect = None
-
-                            self.game_over_timer = None
-
+                            self.flash_start_time = pygame.time.get_ticks()
                             obstacle.kill()
 
                         else:
-                            # Hits > 1: immediate game over
+                            # 超过2次击中，游戏结束
                             if collision_sound:
                                 collision_sound.play()
                             self.state = GAME_OVER
@@ -1442,6 +1451,7 @@ class Game:
                             if lose_sound:
                                 lose_sound.play()
                             obstacle.kill()
+
 
 
             # Check collision with enemies for game over
